@@ -1,0 +1,18 @@
+﻿# VM files - never commit these, they're multi-GB binaries
+*.vmdk
+*.vmx
+*.vmxf
+*.nvram
+*.vmsd
+*.vmss
+*.vmsn
+*.log
+*.iso
+
+# OS junk
+Thumbs.db
+.DS_Store
+
+# Secrets
+*.env
+credentials.txt
