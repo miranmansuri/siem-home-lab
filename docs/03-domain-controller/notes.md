@@ -2,9 +2,9 @@
 
 **Phase:** 1 — Lab foundations
 **Status:** Complete
-**Score:** 93/100
+**Score:** 98/100
 **Host:** `DC01.lab.local` — `10.10.10.10/24` on VMnet2
-**Date completed:** 8 September 2026
+**Date completed:** 8 September 2026 (§4.5 closed 19 September 2026)
 
 ---
 
@@ -124,16 +124,45 @@ NTDS database and its transaction logs onto distinct volumes for write-throughpu
 recovery-isolation reasons. Accepted knowingly here: single virtual disk, no I/O contention
 at lab scale.
 
-### 4.5 Time authority — **OUTSTANDING**
+### 4.5 Time authority
 
-Two competing clock authorities exist on a virtualised DC: VMware Tools host-guest
-synchronisation, and `w32time` with the PDC Emulator acting as authoritative source for the
-domain. `dcdiag` confirms DC01 as Preferred Time Server for `lab.local`.
+A virtualised domain controller has two candidate clock authorities: VMware Tools host-guest
+synchronisation, and `w32time` with the PDC Emulator as authoritative source for the domain.
+`dcdiag` confirms DC01 as Preferred Time Server for `lab.local`.
 
-This decision is **not yet made or documented** and is the outstanding item against this
-milestone. It must be resolved before Milestone 9 (log ingestion validation), because
-timestamp disagreement across DC, client and Wazuh manager breaks event correlation —
-sequencing an attack chain requires trustworthy ordering across log sources.
+**Decision: `w32time` with the PDC Emulator authoritative; VMware Tools guest time
+synchronisation disabled.**
+
+Domain members synchronise from the domain hierarchy by default — this is not a preference,
+it is how Kerberos functions. Tickets are rejected beyond five minutes of clock skew, so AD
+is built around a single authoritative source. Leaving VMware Tools enabled alongside it
+gives two authorities writing the same clock, which diverge after every snapshot restore and
+every host sleep.
+
+That five-minute figure appears in the time service configuration as well:
+`MaxAllowedPhaseOffset: 300`. The time service and the authentication protocol are tuned to
+the same threshold, which is the clearest indication that time is an authentication
+dependency in AD rather than a housekeeping concern.
+
+With no reachable external NTP, the PDC uses its local CMOS clock and declares itself
+stratum 1. Accuracy against UTC is not the objective; internal consistency is. From
+Milestone 9 onward, correlating Sysmon events on the client against Security events on the
+DC inside Wazuh depends on trustworthy event ordering across hosts. Drift would not surface
+as an error — it would produce a plausible but false timeline, which is worse.
+
+Two implementation details worth recording:
+
+- The VMware Tools checkbox disables *periodic* synchronisation only. One-off syncs on
+  resume, snapshot restore and disk shrink are governed by `.vmx` properties rather than the
+  GUI. In a lab where snapshots are taken at every milestone boundary, that distinction
+  matters and is flagged for follow-up.
+- `VMICTimeProvider` is registered and enabled in the time service configuration. This is the
+  Hyper-V Integration Services time provider, present by default in Windows Server. On a
+  VMware guest it has no backing device. Recorded rather than removed: an enabled provider
+  with no underlying hardware is inert, but it is a third time input listed in the
+  configuration and should not go unexplained.
+
+Verified state in §7.10.
 
 ---
 
@@ -203,7 +232,7 @@ detection candidate for Phase 3.
 
 Configured through the AD DS Configuration Wizard, with the equivalent PowerShell exported
 via **Review Options → View script** and retained as
-[`scripts/install-addsforest.ps1`](../scripts/install-addsforest.ps1):
+[`scripts/install-addsforest.ps1`](../../scripts/install-addsforest.ps1):
 
 ```powershell
 Import-Module ADDSDeployment
@@ -338,6 +367,10 @@ matters beyond tidiness: by Phase 4 this network hosts Atomic Red Team execution
 live domain, and an unintended egress path would change the risk profile of that work
 entirely.
 
+Note also that a bare `dcdiag /v` reports the DNS tests as *omitted by user request* rather
+than passed. They must be invoked explicitly with `/test:DNS`. A skipped test reported in
+the same output stream as passing tests is easy to read as a pass.
+
 ### 7.7 Addressing
 
 ```powershell
@@ -374,6 +407,33 @@ operation. Verifying declared state after any privileged change is the transfera
 
 `M3-post-promotion-validated` — the baseline Milestone 4 builds on.
 
+### 7.10 Time service state
+
+```powershell
+w32tm /query /configuration
+w32tm /query /status
+w32tm /query /source
+```
+
+| Property | Value | Meaning |
+|---|---|---|
+| `Type` | `NT5DS` | NtpClient synchronises from the AD domain hierarchy, not a manual NTP peer |
+| `AnnounceFlags` | `10` | Domain controller default — announces DC01 as a reliable time source |
+| `Stratum` | `1` | Primary reference; no upstream to defer to |
+| `ReferenceId` | `LOCL` | Local clock |
+| `Source` | `Local CMOS Clock` | Expected on an air-gapped PDC Emulator |
+| `MaxAllowedPhaseOffset` | `300` | Five seconds shy of nothing — matches Kerberos skew tolerance |
+
+This is the correct end state for an isolated forest, not a degraded one. The domain has a
+single authority and every member will defer to it.
+
+**Analyst note.** The same three commands run on the *host* return
+`The service has not been started (0x80070426)`. On a non-domain-joined Windows 11
+workstation `w32time` is demand-started, so that result is normal there and says nothing
+about the lab. Recorded because running a guest command against the host is an easy error
+when both are PowerShell windows on one screen, and because in a lab whose premise is an
+isolation boundary, knowing which side of it a command executed on is the point.
+
 ---
 
 ## 8. Evidence
@@ -398,27 +458,33 @@ operation. Verifying declared state after any privileged change is the transfera
 | 3.16 | `16-isolation-verified.png` | External DNS and 8.8.8.8 both unreachable |
 | 3.17 | `17-addressing-and-dns-client.png` | `10.10.10.10/24`, no default route, resolver `127.0.0.1` |
 | 3.18 | `18-dns-client-corrected.png` | Resolver reset to `10.10.10.10` |
+| 3.19 | `19-vmware-tools-timesync-disabled.png` | VM settings showing "Time sync off" |
+| 3.20 | `20-w32tm-configuration.png` | `Type: NT5DS`, Stratum 1, source Local CMOS Clock |
 
 ---
 
-## 9. Score — 93/100
+## 9. Score — 98/100
 
 | Criterion | Weight | Score | Notes |
 |---|---|---|---|
 | Objective met | 20 | 20 | Forest created, DC operational, all roles held |
 | Correct sequencing | 10 | 10 | Rename → IP → snapshot → promote |
-| Design decisions justified | 15 | 12 | `.local`, gateway, paths all reasoned. **Time authority undecided — see §4.5** |
+| Design decisions justified | 15 | 15 | `.local`, gateway, paths, and time authority all reasoned and documented |
 | Reproducibility | 10 | 10 | PowerShell throughout; `Install-ADDSForest` exported and retained |
-| Validation depth | 20 | 20 | FSMO, services, shares, SRV, `dcdiag`, addressing, isolation all verified from CLI |
+| Validation depth | 20 | 20 | FSMO, services, shares, SRV, `dcdiag`, addressing, isolation, time service all verified from CLI |
 | Fault diagnosis | 10 | 10 | Prerequisite failure and dcdiag root-hints discrepancy both investigated to root cause |
-| Evidence quality | 10 | 8 | Full screenshot set; failure-and-fix pair captured. Deduct for filenames not yet normalised |
+| Evidence quality | 10 | 10 | Twenty items, normalised filenames, failure-and-fix pair captured |
 | Rollback discipline | 5 | 3 | Both snapshots taken. Deduct: pre-promotion snapshot taken at wizard stage rather than immediately post-addressing |
 
 **Deductions to carry forward**
 
-1. **Time authority decision outstanding.** Must be resolved and documented before Milestone 9.
-2. Normalise screenshot filenames to the `NN-description.png` scheme above.
-3. Snapshot immediately after each configuration change, not at the next natural pause.
+1. Snapshot immediately after each configuration change, not at the next natural pause.
+
+**Open follow-up (not scored — out of scope for this milestone)**
+
+- VMware Tools one-off time syncs on resume and snapshot restore are governed by `.vmx`
+  properties rather than the GUI checkbox disabled in §4.5. To be confirmed against current
+  VMware documentation and addressed before Milestone 9.
 
 ---
 
@@ -431,6 +497,8 @@ operation. Verifying declared state after any privileged change is the transfera
 - *A prerequisites check fails on the Administrator password — what is the underlying reason?*
 - *`dcdiag` reports root hints passing on an air-gapped network. Is that a fault?*
 - *How does a workstation with no configuration find a domain to join?*
+- *Why does clock skew break Kerberos, and what is the tolerance?*
+- *On a virtualised domain controller, what synchronises the clock — and what shouldn't?*
 
 ---
 
@@ -440,4 +508,8 @@ AD structure: organisational units, user and group objects, and a baseline Group
 Object. Built on the `M3-post-promotion-validated` snapshot, and the first milestone to
 exercise the SYSVOL and NETLOGON shares verified in §7.4.
 
-Time authority decision (§4.5) to be resolved as part of Milestone 4 documentation.
+The audit policy carried in that baseline GPO determines what the Windows Security log
+records from Milestone 5 onward. Process creation, PowerShell script block logging and most
+Kerberos activity are not logged by default, and the detection rules written in Phase 3
+depend on them. Milestone 4 is therefore where the telemetry available to the entire rest of
+the project is decided.
