@@ -1,4 +1,4 @@
-# SIEM Home Lab
+﻿# SIEM Home Lab
 
 A documented, end-to-end detection engineering lab: Active Directory, Sysmon-instrumented
 endpoints, a Wazuh SIEM, custom detection rules mapped to MITRE ATT&CK, and adversary
@@ -61,7 +61,7 @@ Host: Windows 11, Intel i7-14650HX, 16 GB RAM, VMware Workstation Pro.
 |---|---|---|
 | 1 | Host and hypervisor setup | ✅ 91/100 |
 | 2 | Isolated lab network design | ✅ 96/100 |
-| 3 | Windows Server install + AD DS promotion | ✅ 93/100 |
+| 3 | Windows Server install + AD DS promotion | ✅ 98/100 |
 | 4 | AD structure: OUs, users, groups, baseline GPO | Next |
 | 5 | Windows client build and domain join | |
 
